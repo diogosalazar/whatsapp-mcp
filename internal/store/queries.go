@@ -328,7 +328,7 @@ func (d *DB) GetActiveChats(after, before string, onlyGroups bool, limit int) ([
 			c.jid,
 			c.name,
 			COUNT(m.id) as msg_count,
-			MAX(m.timestamp) as last_time
+			strftime('%Y-%m-%dT%H:%M:%SZ', MAX(m.timestamp)) as last_time
 		FROM chats c
 		JOIN messages m ON c.jid = m.chat_jid
 		WHERE c.jid != 'status@broadcast'
@@ -355,9 +355,9 @@ func (d *DB) GetActiveChats(after, before string, onlyGroups bool, limit int) ([
 	for rows.Next() {
 		var chat domain.ActiveChatInfo
 		var name sql.NullString
-		var lastTime time.Time
+		var lastTimeStr string
 
-		if err := rows.Scan(&chat.ChatJID, &name, &chat.MessageCount, &lastTime); err != nil {
+		if err := rows.Scan(&chat.ChatJID, &name, &chat.MessageCount, &lastTimeStr); err != nil {
 			continue
 		}
 
@@ -368,7 +368,7 @@ func (d *DB) GetActiveChats(after, before string, onlyGroups bool, limit int) ([
 		}
 
 		chat.IsGroup = strings.Contains(chat.ChatJID, "@g.us")
-		chat.LastMessageTime = lastTime
+		chat.LastMessageTime, _ = time.Parse(time.RFC3339, lastTimeStr)
 
 		var content sql.NullString
 		var isFromMe bool
