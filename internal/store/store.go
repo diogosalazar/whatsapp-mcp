@@ -109,5 +109,13 @@ func migrate(db *sql.DB) error {
 	}
 	// Rebuild the index to backfill from existing messages
 	_, _ = db.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`)
+
+	// Clear misattributed senders for group messages from history sync.
+	// Old code defaulted sender to the group JID's user part when the
+	// participant field was missing. Idempotent: no-op once corrected.
+	_, _ = db.Exec(`UPDATE messages SET sender = ''
+		WHERE chat_jid LIKE '%@g.us'
+		AND sender = REPLACE(chat_jid, '@g.us', '')`)
+
 	return nil
 }
