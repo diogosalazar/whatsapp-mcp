@@ -117,7 +117,18 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 					continue
 				}
 				ts = time.Unix(int64(rawTS), 0)
-				msg = m.Message.Message
+				msg = unwrapRawMessage(m.Message.Message)
+
+				// Normalize edits to the original message ID + edited content,
+				// matching what ParseWebMessage does on the success path.
+				if msg.GetProtocolMessage().GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT {
+					if editKey := msg.GetProtocolMessage().GetKey(); editKey != nil {
+						id = editKey.GetID()
+					}
+					if edited := msg.GetProtocolMessage().GetEditedMessage(); edited != nil {
+						msg = edited
+					}
+				}
 			}
 
 			var text string
@@ -151,6 +162,9 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 				}
 			}
 
+			// INSERT OR REPLACE: both code paths normalize edit IDs to the
+			// original message, so the latest edit overwrites the original row.
+			// This is intentional for a chat archive (not an audit log).
 			if _, err := c.Store.Messages.Exec(`INSERT OR REPLACE INTO messages
 				(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, chatJID, sender, text, ts, fromMe, mt, fn, u, mk, sha, enc, fl); err != nil {
@@ -162,4 +176,41 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 	}
 
 	c.Logger.Info("history sync persisted messages", "count", synced)
+}
+
+// unwrapRawMessage strips wrapper message types (ephemeral, view-once,
+// device-sent, etc.) to expose the inner E2E message. Mirrors the
+// unwrapping chain in whatsmeow's events.Message.UnwrapRaw().
+func unwrapRawMessage(msg *waE2E.Message) *waE2E.Message {
+	if msg == nil {
+		return nil
+	}
+	if inner := msg.GetDeviceSentMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetBotInvokeMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetEphemeralMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetViewOnceMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetViewOnceMessageV2().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetViewOnceMessageV2Extension().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetLottieStickerMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetDocumentWithCaptionMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	if inner := msg.GetEditedMessage().GetMessage(); inner != nil {
+		msg = inner
+	}
+	return msg
 }
