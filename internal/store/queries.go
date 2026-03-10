@@ -10,11 +10,11 @@ import (
 
 // CountChats returns the total number of chats matching the query.
 func (d *DB) CountChats(query string) (int, error) {
-	q := "SELECT COUNT(*) FROM chats"
+	q := "SELECT COUNT(*) FROM chats WHERE jid != 'status@broadcast'"
 	args := []any{}
 
 	if query != "" {
-		q += " WHERE (LOWER(name) LIKE LOWER(?) OR jid LIKE ?)"
+		q += " AND (LOWER(name) LIKE LOWER(?) OR jid LIKE ?)"
 		args = append(args, "%"+query+"%", "%"+query+"%")
 	}
 
@@ -43,7 +43,7 @@ func (d *DB) ListChats(opts domain.ListChatsOptions) ([]domain.Chat, error) {
 	FROM chats
 	LEFT JOIN messages m ON chats.jid = m.chat_jid AND chats.last_message_time = m.timestamp`
 
-	where := []string{}
+	where := []string{"chats.jid != 'status@broadcast'"}
 	args := []any{}
 
 	if opts.Query != "" {
@@ -55,9 +55,7 @@ func (d *DB) ListChats(opts domain.ListChatsOptions) ([]domain.Chat, error) {
 		where = append(where, "chats.jid LIKE '%@g.us'")
 	}
 
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
+	q += " WHERE " + strings.Join(where, " AND ")
 
 	q += " ORDER BY chats.last_message_time DESC LIMIT ? OFFSET ?"
 	args = append(args, opts.Limit, opts.Page*opts.Limit)
@@ -333,7 +331,8 @@ func (d *DB) GetActiveChats(after, before string, onlyGroups bool, limit int) ([
 			MAX(m.timestamp) as last_time
 		FROM chats c
 		JOIN messages m ON c.jid = m.chat_jid
-		WHERE datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
+		WHERE c.jid != 'status@broadcast'
+		AND datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
 	`
 
 	args := []any{after, before}
@@ -397,7 +396,8 @@ func (d *DB) GetQuestionsForMe(after, before string, limit int) ([]domain.Messag
 		SELECT m.timestamp, m.sender, c.name, m.content, m.is_from_me, m.chat_jid, m.id, m.media_type
 		FROM messages m
 		JOIN chats c ON m.chat_jid = c.jid
-		WHERE datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
+		WHERE m.chat_jid != 'status@broadcast'
+		AND datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
 		AND m.is_from_me = 0
 		AND m.content LIKE '%?'
 		ORDER BY m.timestamp DESC
@@ -430,7 +430,8 @@ func (d *DB) GetMediaSummary(after, before string) (*domain.MediaSummary, error)
 			media_type,
 			COUNT(*) as count
 		FROM messages
-		WHERE datetime(timestamp) > datetime(?) AND datetime(timestamp) < datetime(?)
+		WHERE chat_jid != 'status@broadcast'
+		AND datetime(timestamp) > datetime(?) AND datetime(timestamp) < datetime(?)
 		AND media_type IS NOT NULL
 		GROUP BY media_type
 	`
@@ -465,7 +466,8 @@ func (d *DB) GetMediaSummary(after, before string) (*domain.MediaSummary, error)
 		SELECT DISTINCT c.name
 		FROM messages m
 		JOIN chats c ON m.chat_jid = c.jid
-		WHERE datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
+		WHERE m.chat_jid != 'status@broadcast'
+		AND datetime(m.timestamp) > datetime(?) AND datetime(m.timestamp) < datetime(?)
 		AND m.media_type IS NOT NULL
 		LIMIT 10
 	`
