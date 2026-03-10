@@ -102,17 +102,26 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 			}
 
 			fromMe := false
-			snd := jid.User
+			isGroup := jid.Server == "g.us"
+			snd := jid.User // correct for DMs; overridden below for groups
 			if m.Message.Key != nil {
 				if m.Message.Key.FromMe != nil {
 					fromMe = *m.Message.Key.FromMe
 				}
-				if !fromMe && m.Message.Key.Participant != nil && *m.Message.Key.Participant != "" {
-					snd = *m.Message.Key.Participant
+				if !fromMe {
+					if m.Message.Key.Participant != nil && *m.Message.Key.Participant != "" {
+						snd = *m.Message.Key.Participant
+					} else if p := m.Message.GetParticipant(); p != "" {
+						snd = p
+					} else if isGroup {
+						snd = "" // no participant info; don't attribute to group ID
+					}
 				}
 				if fromMe && c.WA != nil && c.WA.Store != nil && c.WA.Store.ID != nil {
 					snd = c.WA.Store.ID.User
 				}
+			} else if isGroup {
+				snd = ""
 			}
 
 			if strings.Contains(snd, "@") {
