@@ -2,9 +2,9 @@ package wa
 
 import (
 	"database/sql"
-	"strings"
 	"time"
 
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -86,57 +86,58 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 				continue
 			}
 
+			// Use whatsmeow's ParseWebMessage for sender resolution.
+			// It handles participant priority, LID mapping, own-JID for fromMe,
+			// message edits, and ephemeral message unwrapping.
+			evt, parseErr := c.WA.ParseWebMessage(jid, m.Message)
+
+			var sender, id string
+			var fromMe bool
+			var ts time.Time
+			var msg *waE2E.Message
+
+			if parseErr == nil {
+				sender = evt.Info.Sender.User
+				id = evt.Info.ID
+				fromMe = evt.Info.IsFromMe
+				ts = evt.Info.Timestamp
+				msg = evt.Message
+			} else {
+				// ParseWebMessage can fail when participant data is missing
+				// for group messages. Store with empty sender, don't skip.
+				c.Logger.Debug("history sync: ParseWebMessage fallback", "err", parseErr, "chat", chatJID)
+				if m.Message.Key != nil && m.Message.Key.ID != nil {
+					id = *m.Message.Key.ID
+				}
+				if m.Message.Key != nil && m.Message.Key.FromMe != nil {
+					fromMe = *m.Message.Key.FromMe
+				}
+				rawTS := m.Message.GetMessageTimestamp()
+				if rawTS == 0 {
+					continue
+				}
+				ts = time.Unix(int64(rawTS), 0)
+				msg = m.Message.Message
+			}
+
 			var text string
-			if m.Message.Message != nil {
-				text = extractTextContent(m.Message.Message)
+			if msg != nil {
+				text = extractTextContent(msg)
 			}
 
 			mt, fn, u, mk, sha, enc, fl := "", "", "", ([]byte)(nil), ([]byte)(nil), ([]byte)(nil), uint64(0)
-			if m.Message.Message != nil {
-				mt, fn, u, mk, sha, enc, fl = extractMediaInfo(m.Message.Message)
+			if msg != nil {
+				mt, fn, u, mk, sha, enc, fl = extractMediaInfo(msg)
 			}
 
 			if text == "" && mt == "" {
-				c.Logger.Debug("history sync: skipping non-text/non-media message", "key", m.Message.Key)
+				c.Logger.Debug("history sync: skipping non-text/non-media message", "id", id, "chat", chatJID)
 				continue
 			}
 
-			fromMe := false
-			isGroup := jid.Server == "g.us"
-			snd := jid.User // correct for DMs; overridden below for groups
-			if m.Message.Key != nil {
-				if m.Message.Key.FromMe != nil {
-					fromMe = *m.Message.Key.FromMe
-				}
-				if !fromMe {
-					if m.Message.Key.Participant != nil && *m.Message.Key.Participant != "" {
-						snd = *m.Message.Key.Participant
-					} else if p := m.Message.GetParticipant(); p != "" {
-						snd = p
-					} else if isGroup {
-						snd = "" // no participant info; don't attribute to group ID
-					}
-				}
-				if fromMe && c.WA != nil && c.WA.Store != nil && c.WA.Store.ID != nil {
-					snd = c.WA.Store.ID.User
-				}
-			} else if isGroup {
-				snd = ""
-			}
-
-			if strings.Contains(snd, "@") {
-				if pj, err := types.ParseJID(snd); err == nil {
-					snd = pj.User
-				} else {
-					if i := strings.Index(snd, "@"); i > 0 {
-						snd = snd[:i]
-					}
-				}
-			}
-
 			// Upsert a per-sender chat entry for name resolution
-			if !fromMe && snd != "" {
-				indiv := types.JID{User: snd, Server: "s.whatsapp.net"}
+			if !fromMe && sender != "" {
+				indiv := types.JID{User: sender, Server: "s.whatsapp.net"}
 				var existing sql.NullString
 				_ = c.Store.Messages.QueryRow("SELECT name FROM chats WHERE jid = ?", indiv.String()).Scan(&existing)
 				if !existing.Valid {
@@ -150,20 +151,9 @@ func (c *Client) handleHistorySync(hs *events.HistorySync) {
 				}
 			}
 
-			id := ""
-			if m.Message.Key != nil && m.Message.Key.ID != nil {
-				id = *m.Message.Key.ID
-			}
-
-			ts := m.Message.GetMessageTimestamp()
-			if ts == 0 {
-				continue
-			}
-			t := time.Unix(int64(ts), 0)
-
 			if _, err := c.Store.Messages.Exec(`INSERT OR REPLACE INTO messages
 				(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, chatJID, snd, text, t, fromMe, mt, fn, u, mk, sha, enc, fl); err != nil {
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, chatJID, sender, text, ts, fromMe, mt, fn, u, mk, sha, enc, fl); err != nil {
 				c.Logger.Warn("history sync: failed to store message", "id", id, "chat_jid", chatJID, "err", err)
 				continue
 			}
